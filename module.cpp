@@ -308,18 +308,51 @@ torch::Tensor myFusedAttention(torch::Tensor QTensor, torch::Tensor KTensor, tor
     // -------- YOUR CODE HERE  -------- //
     // We give you a template of the first three loops for your convenience
     //loop over batch
-    for (int b = 0; b < B; b++){
+    #pragma omp parallel for collapse(3)
+    for (int b = 0; b < B; b++) {
 
         //loop over heads
-        for (int h = 0; h < H; h++){
-            for (int i = 0; i < N ; i++){
+        for (int h = 0; h < H; h++) {
+            for (int i = 0; i < N ; i++) {
 
-		// YRow is moved inside so each OpenMP thread gets a local copy.
+		        // YRow is moved inside so each OpenMP thread gets a local copy.
                 at::Tensor ORowTensor = temp.index({torch::indexing::Slice(omp_get_thread_num(), torch::indexing::None)});      
                 std::vector<float> ORow = formatTensor(ORowTensor);
-		//YOUR CODE HERE
+                int zero_idx = 0;
+                
+                // Matrix mul
+                for (int j=0; j < N; j++) {
+                    int row_Q = i;
+                    int row_K = j;
+                    float res = 0;
+                    for (int col=0; col < d; col++) {
+                        float r1 = fourDimRead(Q,b,h,row_Q,col,H,N,d);
+                        float r2 = fourDimRead(K,b,h,row_K,col,H,N,d);
+                        res += r1 * r2;
+                    }
+                    twoDimWrite(ORow, zero_idx, j, N, res);
+                }
+
+                // Softmax
+                float exp_sum = 0;
+                for (int j=0; j < N; j++) {
+                    exp_sum += exp(twoDimRead(ORow, zero_idx, j, N));
+                }
+                for (int j=0; j < N; j++) {
+                    float res = exp(twoDimRead(ORow, zero_idx, j, N)) / exp_sum;
+                    twoDimWrite(ORow, zero_idx, j, N, res);
+                }
+                
+                // Matrix mul
+                for (int j=0; j < d; j++) {
+                    float res = 0;
+                    for (int k=0; k < N; k++) {
+                        res += twoDimRead(ORow, zero_idx, k, N) * twoDimRead(V, k, j, d);
+                    }
+                    fourDimWrite(O, b, h, i, j,H,N,d,res);
+                }
             }
-	}
+	    }
     }
 	    
 	
