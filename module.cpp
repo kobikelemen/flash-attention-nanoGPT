@@ -28,10 +28,10 @@ inline void twoDimWrite(std::vector<float> &tensor, int &x, int &y, const int &s
 inline float fourDimRead(std::vector<float> &tensor, int &x, int &y, int &z, int &b, 
         const int &sizeX, const int &sizeY, const int &sizeZ) {
     
-    int linear_idx = x * (sizeZ * sizeY * sizeX) + y * (sizeZ * sizeY) + z * (sizeZ)+ b;
+    int linear_idx = x * (sizeZ * sizeY * sizeX) + y * (sizeZ * sizeY) + z * (sizeZ) + b;
     if (linear_idx >= tensor.size()){
         // std::cout << "fourDimRead ERROR" << std::endl;
-        printf("fourDimRead ERROR, access: %i %i %i %i, tensor size:%zu, dim sizes: %i %i %i\n", x,y,z,b,tensor.size(), sizeX, sizeY, sizeZ);
+        printf("fourDimRead ERROR, access: %i %i %i %i, tensor size:%zu, dim sizes: %i %i %i, linear_idx:%i\n", x,y,z,b,tensor.size(), sizeX, sizeY, sizeZ, linear_idx);
         exit(0);
     }
     return tensor[linear_idx];
@@ -90,7 +90,6 @@ torch::Tensor myNaiveAttention(torch::Tensor QTensor, torch::Tensor KTensor, tor
     //QK^t Intermediate Tensor has Shape (N, N)
     
     //Make O Tensor with Shape (B, H, N, d)
-    std::cout << "hello" << std::endl;
     at::Tensor OTensor = at::zeros({B, H, N, d}, at::kFloat);
 
     //Format O, Q, K, and V tensors into 4D vectors
@@ -101,7 +100,7 @@ torch::Tensor myNaiveAttention(torch::Tensor QTensor, torch::Tensor KTensor, tor
 
     //Format QK_t Tensor into a 2D vector.
     std::vector<float> QK_t = formatTensor(QK_tTensor);
-    
+    printf("B:%i H:%i N:%i d:%i\n", B,H,N,d);
     /* Here is an example of how to read/write 0's to  Q (B, H, N, d) using the 4D accessors
 
         //loop over Batch Size
@@ -204,6 +203,76 @@ torch::Tensor myUnfusedAttentionBlocked(torch::Tensor QTensor, torch::Tensor KTe
     std::vector<float> QK_t = formatTensor(QK_tTensor);
 
     // -------- YOUR CODE HERE  -------- //
+
+    int BLOCKSIZE = 32; // cache line size
+    printf("B:%i H:%i N:%i d:%i\n", B,H,N,d);
+
+    for (int b=0; b < B; b++) {
+        for (int h=0; h < H; h++) {
+            int idiff;
+            int jdiff;
+            int kdiff;
+            // Matrix multiply Q * K^t
+            for (int iblock=0; iblock < N; iblock += BLOCKSIZE) {
+                idiff = std::min(BLOCKSIZE, N-iblock);
+                for (int jblock=0; jblock < N; jblock += BLOCKSIZE) {
+                    jdiff = std::min(BLOCKSIZE, N-jblock);
+                    for (int kblock=0; kblock < d; kblock += BLOCKSIZE) {
+                        kdiff = std::min(BLOCKSIZE, d-kblock);
+                        for (int i=0; i < idiff; i++) {
+                            for (int j=0; j < jdiff; j++) {
+                                int i_idx = iblock + i;
+                                int j_idx = jblock + j;
+                                float res = twoDimRead(QK_t, i_idx, j_idx, N);
+                                for (int k=0; k < kdiff; k++) {
+                                    int k_idx = kblock + k;
+                                    float r1 = fourDimRead(Q, b, h, i_idx, k_idx, H, N, d);
+                                    float r2 = fourDimRead(K, b, h, j_idx, k_idx, H, N, d);
+                                    res += r1 * r2;
+                                }
+                                twoDimWrite(QK_t, i_idx, j_idx, N, res);
+                            }
+                        }   
+                    }
+                }
+            }
+
+            // Softmax
+            for (int i=0; i < N; i++) {
+                float exp_sum = 0;
+                for (int j=0; j < N; j++) {
+                    exp_sum += exp(twoDimRead(QK_t, i, j, N));
+                }
+                for (int j=0; j < N; j++) {
+                    float res = exp(twoDimRead(QK_t, i, j, N)) / exp_sum;
+                    twoDimWrite(QK_t, i, j, N, res);
+                }
+            }
+
+            for (int iblock=0; iblock < N; iblock += std::min(BLOCKSIZE, N-iblock)) {
+                idiff = std::min(BLOCKSIZE, N-iblock);
+                for (int jblock=0; jblock < d; jblock += std::min(BLOCKSIZE, d-jblock)) {
+                    jdiff = std::min(BLOCKSIZE, N-jblock);
+                    for (int kblock=0; kblock < N; kblock += std::min(BLOCKSIZE, N-kblock)) {
+                        kdiff = std::min(BLOCKSIZE, N-kblock);
+                        for (int i=0; i < idiff; i++) {
+                            for (int j=0; j < jdiff; j++) {
+                                int i_idx = iblock + i;
+                                int j_idx = jblock + j;
+                                float res = fourDimRead(O, b, h, i_idx, j_idx, H, N, d);
+                                for (int k=0; k < kdiff; k++) {
+                                    int k_idx = kblock + k; 
+                                    res += twoDimRead(QK_t, i_idx, k_idx, N) * twoDimRead(V, k_idx, j_idx, d);
+                                }
+                                fourDimWrite(O, b, h, i_idx, j_idx, H, N, d, res);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 
     // DO NOT EDIT THIS RETURN STATEMENT //
     // It formats your C++ Vector O back into a Tensor of Shape (B, H, N, d) and returns it //
