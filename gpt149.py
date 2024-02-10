@@ -166,7 +166,8 @@ def testTemplate(customFunc, params, test_key):
             QKS1 = customFunc()
             end = time.time()
             manual_time = end - start
-    
+    print('QKV:', QKV)
+    print('QKS1:', QKS1)
     assert torch.allclose(QKV,QKS1, atol=1e-4), correctness_error_message
     print("manual attention == pytorch attention",torch.allclose(QKV,QKS1, atol=1e-4)) 
     #print("Pytorch Execution Time:", pytorch_time, "\n")
